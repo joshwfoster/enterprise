@@ -718,7 +718,7 @@ class FeatherPulsar:
             if attr in meta:
                 setattr(self, attr, meta[attr])
             else:
-                print(f"Pulsar.read_feather: cannot find {attr} in feather file {filename}.")
+                print(f"FeatherPulsar.read_feather: cannot find {attr} in feather file {filename}.")
 
         if "noisedict" in meta:
             setattr(self, "noisedict", meta["noisedict"])
@@ -758,7 +758,7 @@ class FeatherPulsar:
             if hasattr(self, attr):
                 meta[attr] = Pulsar.to_list(getattr(self, attr))
             else:
-                print(f"Pulsar.save_feather: cannot find {attr} in Pulsar {self.name}.")
+                print(f"FeatherPulsar.save_feather: cannot find {attr} in Pulsar {self.name}.")
 
         # use attribute if present
         noisedict = getattr(self, "noisedict", None) if noisedict is None else noisedict
