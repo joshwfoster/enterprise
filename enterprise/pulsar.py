@@ -668,7 +668,7 @@ class FeatherPulsar:
     vector_columns = ["Mmat", "sunssb", "pos_t"]
     tensor_columns = ["planetssb"]
     # flags are done separately
-    metadata = ["name", "dm", "dmx", "pdist", "pos", "phi", "theta"]
+    metadata = ["name", "dm", "dmx", "pdist", "pos", "phi", "theta", "fitpars", "setpars", "_pdist"]
     # notes: currently ignores _isort/__isort and gets sorted versions
 
     def __init__(self):
@@ -754,9 +754,9 @@ class FeatherPulsar:
         pydict.update({f"flags_{flag}": self.flags[flag] for flag in self.flags})
 
         meta = {}
-        for attr in Pulsar.metadata:
+        for attr in FeatherPulsar.metadata:
             if hasattr(self, attr):
-                meta[attr] = Pulsar.to_list(getattr(self, attr))
+                meta[attr] = FeatherPulsar.to_list(getattr(self, attr))
             else:
                 print(f"FeatherPulsar.save_feather: cannot find {attr} in Pulsar {self.name}.")
 
