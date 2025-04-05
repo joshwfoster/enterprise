@@ -526,7 +526,7 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
     flat_params = [p for block in param_blocks for p in block]
 
     @function
-    def new_params_hd_orf(pos1, pos2, **params):
+    def new_params_hd_orf(name1, name2, **params):
 
         # First we calculate the position of each pulsar updated by the displacement parameters
         position_vectors = np.zeros((psr_locs.shape[0], 3))
@@ -585,6 +585,7 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
 
         # This is the covariance matrix in the fourier basis
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
+        return block_fourier_cov_mat[name1][name2]
 
         """Hellings & Downs spatial correlation function."""
         if np.all(pos1 == pos2):
@@ -653,13 +654,13 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
         def get_phi(self, params):
             self._construct_basis(params)
             prior = ULDMCommonGP._prior(self._labels, params=params)
-            orf = ULDMCommonGP._orf(self._psrpos, self._psrpos, params=params)
+            orf = ULDMCommonGP._orf(self._psrname, self._psrname, params=params)
             return prior * orf
 
         @classmethod
         def get_phicross(cls, signal1, signal2, params):
             prior = cls._prior(signal1._labels, params=params)
-            orf = cls._orf(signal1._psrpos, signal2._psrpos, params=params)
+            orf = cls._orf(signal1._psrname, signal2._psrname, params=params)
             return prior * orf
 
     return ULDMCommonGP
