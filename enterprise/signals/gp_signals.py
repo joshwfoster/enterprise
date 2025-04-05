@@ -526,7 +526,7 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
     flat_params = [p for block in param_blocks for p in block]
 
     @function
-    def new_params_hd_orf(name1, name2, **params):
+    def new_params_hd_orf(**params):
 
         # First we calculate the position of each pulsar updated by the displacement parameters
         position_vectors = np.zeros((psr_locs.shape[0], 3))
@@ -585,7 +585,9 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
 
         # This is the covariance matrix in the fourier basis
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
-        return block_fourier_cov_mat[name1][name2]
+        return block_fourier_cov_mat
+
+        #return block_fourier_cov_mat[name1][name2]
 
     return new_params_hd_orf(**{p.name: p for p in flat_params})
 
@@ -624,6 +626,7 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
             # Need this for now
             self._psrpos = psr.pos
             self._psrname = psr.name
+            self._orfdict = None
 
         @property
         def basis_params(self):
@@ -647,13 +650,13 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
         def get_phi(self, params):
             self._construct_basis(params)
             prior = ULDMCommonGP._prior(self._labels, params=params)
-            orf = ULDMCommonGP._orf(self._psrname, self._psrname, params=params)
+            orf = ULDMCommonGP._orf(params=params)[self._psrname][self._psrname]
             return prior * orf
 
         @classmethod
         def get_phicross(cls, signal1, signal2, params):
             prior = cls._prior(signal1._labels, params=params)
-            orf = cls._orf(signal1._psrname, signal2._psrname, params=params)
+            orf = cls._orf(params=params)[signal1._psrname][signal2._psrname]
             return prior * orf
 
     return ULDMCommonGP
