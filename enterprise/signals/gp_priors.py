@@ -12,6 +12,11 @@ import enterprise.constants as const
 
 
 @function
+def constantspectrum(f, log10_A=-16, components=2):
+    df = np.diff(np.concatenate(([0], f[::components])))
+    return (10 ** log10_A) ** 2 * np.repeat(df, components)
+
+@function
 def powerlaw(f, log10_A=-16, gamma=5, components=2):
     df = np.diff(np.concatenate((np.array([0]), f[::components])))
     return (
