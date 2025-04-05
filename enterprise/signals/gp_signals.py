@@ -461,13 +461,181 @@ def FourierBasisCommonGP(
 
     return FourierBasisCommonGP
 
+##############################################
+###  This is start of my implementation!   ###
+##############################################
+
+@function
+def hd_orf(pos1, pos2):
+    """Hellings & Downs spatial correlation function."""
+    if np.all(pos1 == pos2):
+        return 1
+    else:
+        omc2 = (1 - np.dot(pos1, pos2)) / 2
+        return 1.5 * omc2 * np.log(omc2) - 0.25 * omc2 + 0.5
+
+@function
+def get_cov_block(delta_t, xp, xq, xpq, m, l):
+
+    first  = np.cos(2*m*delta_t)
+    second = -np.exp(-xp**2/l**2) * np.cos(2*m*(delta_t - xp))
+    third  = -np.exp(-xq**2/l**2) * np.cos(2*m*(delta_t + xq))
+    fourth = np.exp(-xpq**2/l**2) * np.cos(2*m*(delta_t - xp + xq))
+
+    return first + second + third + fourth
+
+
+@function
+def param_hd_orf(pos1, pos2, A, alpha, **params):
+    x = (1 - np.dot(pos1, pos2)) / 2
+
+    if np.allclose(pos1, pos2):
+        return A * 1.0
+    else:
+        x_pow = x**alpha
+        return A * (1.5 * x_pow * np.log(x) - 0.25 * x_pow + 0.5)
+
+
+def param_hd_vector_orf_wrapper(name):
+    param_vector = [
+        parameter.Uniform(0.1, 2.0)(f"{name}_A"),
+        parameter.Uniform(0.0, 2.0)(f"{name}_alpha")
+    ]
+
+    @function
+    def param_hd_orf(pos1, pos2, **params):
+        values = [params[p.name] for p in param_vector]
+        A, alpha = values  # safe unpack
+
+        """Hellings & Downs spatial correlation function."""
+        if np.all(pos1 == pos2):
+            return 1
+        else:
+            omc2 = (1 - np.dot(pos1, pos2)) / 2
+            return 1.5 * omc2 * np.log(omc2) - 0.25 * omc2 + 0.5
+
+    return param_hd_orf(**{p.name: p for p in param_vector})
+
+
+def ULDMCommonGP(freq, log10_A, pulsar_names, pulsar_times, pulsar_locations, combine=True, name="uldm"):
+
+    priorFunction = utils.constantspectrum(log10_A=log10_A)
+    basisFunction = utils.createfourierdesignmatrix_red(nmodes=1, fmin=freq, fmax=freq)
+
+    class ULDMCommonGP(signal_base.CommonSignal):
+        signal_type = "common basis"
+        signal_name = "uldm"
+        signal_id = name
+
+        signal_frequency = freq
+        psr_names = pulsar_names
+        psr_toas = pulsar_times
+        psr_locs = pulsar_locations
+
+        basis_combine = combine
+
+        _orf = hd_orf()(name) #orfFunction(name)
+        _prior = priorFunction(name)
+
+        def __init__(self, psr):
+            super().__init__(psr)
+            self.name = self.psrname + "_" + self.signal_id
+
+            pname = "_".join([psr.name, name])
+            self._bases = basisFunction(pname, psr=psr)
+
+            self._params = {}
+
+            for par in itertools.chain(
+                self._prior._params.values(), self._orf._params.values(), self._bases._params.values()
+            ):
+                self._params[par.name] = par
+
+            # Need this for now
+            self._psrpos = psr.pos
+
+            # Add sampled sky location and radial displacement from reference distance
+            self._radial_displacement = parameter.Normal(sigma =psr.pdist[1])(f"{psr.name}_radial_displacement") # displacement in kpc
+            self._cosTheta = parameter.Uniform(-1, 1)(f"{psr.name}_cosTheta") # cosTheta on celestial sphere
+            self._phi = parameter.Uniform(0, 2*np.pi)(f"{psr.name}_phi") # phi on celestial sphere
+            self._phase = parameter.Uniform(0, 2*np.pi)(f"{psr.name}_phase") # phi on celestial sphere
+
+            self._params[self._radial_displacement.name] = self._radial_displacement
+            self._params[self._cosTheta.name] = self._cosTheta
+            self._params[self._phi.name] = self._phi
+            self._params[self._phase.name] = self._phase
+
+            self._location = psr.pdist[0] * psr.pos # central location in kpc
+            self._toas = psr.toas
+
+        @property
+        def basis_params(self):
+            return [pp.name for pp in self._bases.params]
+
+        @signal_base.cache_call("basis_params", limit=1)
+        def _construct_basis(self, params={}):
+            self._basis, self._labels = self._bases(params=params)
+
+        @property
+        def delay_params(self):
+            return []
+
+        def get_delay(self, params={}):
+            return 0
+
+        def get_basis(self, params={}):
+            self._construct_basis(params)
+            return self._basis
+
+        def get_phi(self, params):
+            self._construct_basis(params)
+            prior = ULDMCommonGP._prior(self._labels, params=params)
+            orf = ULDMCommonGP._orf(self._psrpos, self._psrpos, params=params)
+            return prior * orf
+
+        @classmethod
+        def get_phicross(cls, signal1, signal2, params):
+            prior = cls._prior(signal1._labels, params=params)
+            orf = cls._orf(signal1._psrpos, signal2._psrpos, params=params)
+            return prior * orf
+
+        @staticmethod
+        def build_transformation_matrix(psrs, freq):
+            """Builds the global block sparse matrix X = [C1 S1 C2 S2 ...]"""
+            toas_total = sum(len(p.toas) for p in psrs)
+            ncols = 2 * len(psrs)
+            data = []
+            rows = []
+            cols = []
+
+            offset = 0
+            for i, psr in enumerate(psrs):
+                F, _ = utils.createfourierdesignmatrix_red(
+                    toas=psr.toas, nmodes=1, fmin=freq, fmax=freq
+                )
+                Np = len(psr.toas)
+                for j in range(2):
+                    rows.extend(offset + np.arange(Np))
+                    cols.extend([2 * i + j] * Np)
+                    data.extend(F[:, j])
+                offset += Np
+
+            X_sparse = sps.coo_matrix((data, (rows, cols)), shape=(toas_total, ncols)).tocsr()
+            XTransform = sps.linalg.inv(X_sparse.T @ X_sparse)@ X_sparse.T
+            return XTransform
+
+    return ULDMCommonGP
+
+################################################
+###   This is the end of my implementation   ###
+################################################
 
 # for simplicity, we currently do not handle Tspan automatically
 def FourierBasisCommonGP_ephem(spectrum, components, Tspan, name="ephem_gp"):
     basis = utils.createfourierdesignmatrix_ephem(nmodes=components, Tspan=Tspan)
     orf = utils.monopole_orf()
 
-    return BasisCommonGP(spectrum, basis, orf, name=name)
+    return BasisCommonGP(spectrum, basis, orf(), name=name)
 
 
 def FourierBasisCommonGP_physicalephem(
