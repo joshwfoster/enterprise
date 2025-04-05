@@ -466,13 +466,29 @@ def FourierBasisCommonGP(
 ##############################################
 
 @function
-def hd_orf(pos1, pos2):
-    """Hellings & Downs spatial correlation function."""
-    if np.all(pos1 == pos2):
-        return 1
-    else:
-        omc2 = (1 - np.dot(pos1, pos2)) / 2
-        return 1.5 * omc2 * np.log(omc2) - 0.25 * omc2 + 0.5
+def build_transformation_matrix(psrs, freq):
+    """Builds the global block sparse matrix X = [C1 S1 C2 S2 ...]"""
+    toas_total = sum(len(p.toas) for p in psrs)
+    ncols = 2 * len(psrs)
+    data = []
+    rows = []
+    cols = []
+
+    offset = 0
+    for i, psr in enumerate(psrs):
+        F, _ = utils.createfourierdesignmatrix_red(
+            toas=psr.toas, nmodes=1, fmin=freq, fmax=freq
+        )
+        Np = len(psr.toas)
+        for j in range(2):
+            rows.extend(offset + np.arange(Np))
+            cols.extend([2 * i + j] * Np)
+            data.extend(F[:, j])
+        offset += Np
+
+    X_sparse = sps.coo_matrix((data, (rows, cols)), shape=(toas_total, ncols)).tocsr()
+    XTransform = sps.linalg.inv(X_sparse.T @ X_sparse)@ X_sparse.T
+    return XTransform
 
 @function
 def get_cov_block(delta_t, xp, xq, xpq, m, l):
@@ -484,28 +500,91 @@ def get_cov_block(delta_t, xp, xq, xpq, m, l):
 
     return first + second + third + fourth
 
-
 @function
-def param_hd_orf(pos1, pos2, A, alpha, **params):
-    x = (1 - np.dot(pos1, pos2)) / 2
+def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
+    covariance = congruence_matrix @ time_domain_covariance @ congruence_matrix.T
 
-    if np.allclose(pos1, pos2):
-        return A * 1.0
-    else:
-        x_pow = x**alpha
-        return A * (1.5 * x_pow * np.log(x) - 0.25 * x_pow + 0.5)
+    n = len(names)
+    block_dict = {name_i: {} for name_i in names}
 
+    for i in range(n):
+        for j in range(n):
+            name_i = names[i]
+            name_j = names[j]
+            block = covariance[2*i:2*i+2, 2*j:2*j+2]
+            block_dict[name_i][name_j] = block
 
-def param_hd_vector_orf_wrapper(name):
-    param_vector = [
-        parameter.Uniform(0.1, 2.0)(f"{name}_A"),
-        parameter.Uniform(0.0, 2.0)(f"{name}_alpha")
-    ]
+    return block_dict
+
+def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_matrix, param_blocks):
+
+    # Take care of formatting
+    n_psrs = len(psr_locs)
+    psr_locs = np.asarray(psr_locs)
+
+    # Flatten the list for the decorator and instantiation
+    flat_params = [p for block in param_blocks for p in block]
 
     @function
-    def param_hd_orf(pos1, pos2, **params):
-        values = [params[p.name] for p in param_vector]
-        A, alpha = values  # safe unpack
+    def new_params_hd_orf(pos1, pos2, **params):
+
+        # First we calculate the position of each pulsar updated by the displacement parameters
+        position_vectors = np.zeros((psr_locs.shape[0], 3))
+        phases = np.zeros((psr_locs.shape[0]))
+
+        for psr_index, block in enumerate(param_blocks):
+            r = params[block[0].name]
+            cosTheta = params[block[1].name]
+            phi = params[block[2].name]
+
+            x = r * np.sin(np.arccos(cosTheta)) * np.cos(phi) + psr_locs[psr_index][0]
+            y = r * np.sin(np.arccos(cosTheta)) * np.sin(phi) + psr_locs[psr_index][1]
+            z = r * cosTheta + psr_locs[psr_index][2]
+
+            position_vectors[psr_index] = x, y, z
+
+            # Nothing is done with the phases righ now
+            if len(block) == 4:
+                phases[psr_index] = params[block[3].name]
+            else:
+                phases[psr_index] = 2*m*np.linalg.norm(position_vectors[psr_index])
+
+        # Now that we have the positions, we calculate their distances from Earth and each other
+        psr_dists = np.linalg.norm(position_vectors, axis = -1)
+        rel_dists = np.linalg.norm(position_vectors[:, None, :] - position_vectors[None, :, :], axis = -1)
+
+        # Now that we have these quantities, let's start to build the time-time covariance matrix
+        total_times = np.sum([len(psr_toas[i]) for i in range(len(psr_toas))])
+        cov_mat = np.zeros((total_times, total_times))
+
+        row_start = 0 # needed for constructing the block-embedded covariance matrix
+        col_start = 0 # needed for constructing the block-embedded covariance matrix
+
+        for p in range(n_psrs):
+            for q in range(n_psrs):
+
+                # Picking the right distances
+                xp = psr_dists[p]
+                xq = psr_dists[q]
+                xpq = rel_dists[p, q]
+
+                # The time differences for constructing the covariance matrix
+                delta_t = psr_toas[p][:, None] - psr_toas[q][None, :]
+                cov_block = get_cov_block(delta_t, xp, xq, xpq, m, l)
+
+                row_stop = row_start+cov_block.shape[0] # needed for constructing the block-embedded covariance matrix
+                col_stop = col_start+cov_block.shape[1] # needed for constructing the block-embedded covariance matrix
+
+                # Embed the covariance block and update the column starting position
+                cov_mat[row_start:row_stop, col_start:col_stop]= cov_block
+                col_start = col_stop
+
+            # Update the row starting position and reset the column starting position
+            row_start = row_stop
+            col_start = 0
+
+        # This is the covariance matrix in the fourier basis
+        block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
 
         """Hellings & Downs spatial correlation function."""
         if np.all(pos1 == pos2):
@@ -514,27 +593,24 @@ def param_hd_vector_orf_wrapper(name):
             omc2 = (1 - np.dot(pos1, pos2)) / 2
             return 1.5 * omc2 * np.log(omc2) - 0.25 * omc2 + 0.5
 
-    return param_hd_orf(**{p.name: p for p in param_vector})
+    return new_params_hd_orf(**{p.name: p for p in flat_params})
 
 
-def ULDMCommonGP(freq, log10_A, pulsar_names, pulsar_times, pulsar_locations, combine=True, name="uldm"):
+def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
 
     priorFunction = utils.constantspectrum(log10_A=log10_A)
     basisFunction = utils.createfourierdesignmatrix_red(nmodes=1, fmin=freq, fmax=freq)
 
     class ULDMCommonGP(signal_base.CommonSignal):
+
         signal_type = "common basis"
         signal_name = "uldm"
         signal_id = name
-
         signal_frequency = freq
-        psr_names = pulsar_names
-        psr_toas = pulsar_times
-        psr_locs = pulsar_locations
 
         basis_combine = combine
 
-        _orf = hd_orf()(name) #orfFunction(name)
+        _orf = orfFunction(name)
         _prior = priorFunction(name)
 
         def __init__(self, psr):
@@ -553,20 +629,7 @@ def ULDMCommonGP(freq, log10_A, pulsar_names, pulsar_times, pulsar_locations, co
 
             # Need this for now
             self._psrpos = psr.pos
-
-            # Add sampled sky location and radial displacement from reference distance
-            self._radial_displacement = parameter.Normal(sigma =psr.pdist[1])(f"{psr.name}_radial_displacement") # displacement in kpc
-            self._cosTheta = parameter.Uniform(-1, 1)(f"{psr.name}_cosTheta") # cosTheta on celestial sphere
-            self._phi = parameter.Uniform(0, 2*np.pi)(f"{psr.name}_phi") # phi on celestial sphere
-            self._phase = parameter.Uniform(0, 2*np.pi)(f"{psr.name}_phase") # phi on celestial sphere
-
-            self._params[self._radial_displacement.name] = self._radial_displacement
-            self._params[self._cosTheta.name] = self._cosTheta
-            self._params[self._phi.name] = self._phi
-            self._params[self._phase.name] = self._phase
-
-            self._location = psr.pdist[0] * psr.pos # central location in kpc
-            self._toas = psr.toas
+            self._psrname = psr.name
 
         @property
         def basis_params(self):
@@ -598,31 +661,6 @@ def ULDMCommonGP(freq, log10_A, pulsar_names, pulsar_times, pulsar_locations, co
             prior = cls._prior(signal1._labels, params=params)
             orf = cls._orf(signal1._psrpos, signal2._psrpos, params=params)
             return prior * orf
-
-        @staticmethod
-        def build_transformation_matrix(psrs, freq):
-            """Builds the global block sparse matrix X = [C1 S1 C2 S2 ...]"""
-            toas_total = sum(len(p.toas) for p in psrs)
-            ncols = 2 * len(psrs)
-            data = []
-            rows = []
-            cols = []
-
-            offset = 0
-            for i, psr in enumerate(psrs):
-                F, _ = utils.createfourierdesignmatrix_red(
-                    toas=psr.toas, nmodes=1, fmin=freq, fmax=freq
-                )
-                Np = len(psr.toas)
-                for j in range(2):
-                    rows.extend(offset + np.arange(Np))
-                    cols.extend([2 * i + j] * Np)
-                    data.extend(F[:, j])
-                offset += Np
-
-            X_sparse = sps.coo_matrix((data, (rows, cols)), shape=(toas_total, ncols)).tocsr()
-            XTransform = sps.linalg.inv(X_sparse.T @ X_sparse)@ X_sparse.T
-            return XTransform
 
     return ULDMCommonGP
 
