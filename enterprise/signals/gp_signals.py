@@ -587,13 +587,6 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
         return block_fourier_cov_mat[name1][name2]
 
-        """Hellings & Downs spatial correlation function."""
-        if np.all(pos1 == pos2):
-            return 1
-        else:
-            omc2 = (1 - np.dot(pos1, pos2)) / 2
-            return 1.5 * omc2 * np.log(omc2) - 0.25 * omc2 + 0.5
-
     return new_params_hd_orf(**{p.name: p for p in flat_params})
 
 
