@@ -14,11 +14,6 @@ import enterprise.constants as const
 @function
 def powerlaw(f, log10_A=-16, gamma=5, components=2):
     df = np.diff(np.concatenate((np.array([0]), f[::components])))
-    result = (
-        (10**log10_A) ** 2 / 12.0 / np.pi**2 * const.fyr ** (gamma - 3) * f ** (-gamma) * np.repeat(df, components)
-    )
-    print(result)
-
     return (
         (10**log10_A) ** 2 / 12.0 / np.pi**2 * const.fyr ** (gamma - 3) * f ** (-gamma) * np.repeat(df, components)
     )
