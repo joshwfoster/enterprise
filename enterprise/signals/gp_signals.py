@@ -17,6 +17,7 @@ from enterprise.signals import parameter, selections, signal_base, utils
 from enterprise.signals.parameter import function
 from enterprise.signals.selections import Selection
 from enterprise.signals.utils import KernelMatrix
+from astropy import units, constants
 
 # logging.basicConfig(format="%(levelname)s: %(name)s: %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -491,23 +492,19 @@ def build_transformation_matrix(psrs, freq):
     XTransform = sps.linalg.inv(X_sparse.T @ X_sparse)@ X_sparse.T
     return XTransform
 
-@njit
-def get_cov_block(delta_t, xp, xq, xpq, m, l):
-    two_m = 2 * m
-    l2_inv = 1 / (l * l)
+def get_cov_block(precomputed, phase_p, phase_q, xp, xq, xpq):
+    cos_term, sin_term = precomputed
 
-    cos1 = np.cos(two_m * delta_t)
-    cos2 = np.cos(two_m * (delta_t - xp))
-    cos3 = np.cos(two_m * (delta_t + xq))
-    cos4 = np.cos(two_m * (delta_t - xp + xq))
+    cos1 = cos_term
+    cos2 = cos_term * np.cos(phase_p) + sin_term * np.sin(phase_p)
+    cos3 = cos_term * np.cos(phase_q) - sin_term * np.sin(phase_q)
+    cos4 = cos_term * np.cos(phase_p-phase_q) + sin_term * np.sin(phase_p-phase_q)
 
-    exp2 = np.exp(-xp**2 * l2_inv)
-    exp3 = np.exp(-xq**2 * l2_inv)
-    exp4 = np.exp(-xpq**2 * l2_inv)
+    exp2 = np.exp(-xp**2)
+    exp3 = np.exp(-xq**2)
+    exp4 = np.exp(-xpq**2)
 
-    return cos1 - exp2 * cos2 - exp3 * cos3 + exp4 * cos4
-
-
+    return cos1 - exp2*cos2 - exp3*cos3 + exp4*cos4
 
 
 @function
@@ -526,7 +523,10 @@ def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
 
     return block_dict
 
-def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_matrix, param_blocks):
+def param_blocks_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_matrix, param_blocks):
+
+    # Doing a unit conversion that will be helpful later
+    mass_invKpc = (mass_hz / units.s / constants.c).to(1/units.kpc).value # [1/kpc]
 
     # Take care of formatting
     n_psrs = len(psr_locs)
@@ -535,14 +535,29 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
     # Flatten the list for the decorator and instantiation
     flat_params = [p for block in param_blocks for p in block]
 
+    # Making some things class variables to declutter and save on initialization
+    position_vectors = np.zeros((psr_locs.shape[0], 3))
+    phases = np.zeros((psr_locs.shape[0]))
+
+    # Shape of the covariance matrix will never change
+    total_times = np.sum([len(psr_toas[i]) for i in range(len(psr_toas))])
+    cov_mat = np.zeros((total_times, total_times))
+
+    # Let's precompute all the cosines and sines we could need to accelerate the calculation
+    precomputed_blocks = []
+
+    for p in range(n_psrs):
+        local_list = []
+        for q in range(n_psrs):
+            two_m_delta_t = 2*mass_hz * (psr_toas[p][:, None] - psr_toas[q][None, :])
+            local_list.append(np.array([np.cos(two_m_delta_t), np.sin(two_m_delta_t)]))
+        precomputed_blocks.append(local_list)
+
     @function
     def new_params_hd_orf(**params):
         start = time.time()
 
         # First we calculate the position of each pulsar updated by the displacement parameters
-        position_vectors = np.zeros((psr_locs.shape[0], 3))
-        phases = np.zeros((psr_locs.shape[0]))
-
         for psr_index, block in enumerate(param_blocks):
             r = params[block[0].name]
             cosTheta = params[block[1].name]
@@ -558,39 +573,34 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
             if len(block) == 4:
                 phases[psr_index] = params[block[3].name]
             else:
-                phases[psr_index] = 2*m*np.linalg.norm(position_vectors[psr_index])
-
+                phases[psr_index] = 2*mass_invKpc*np.linalg.norm(position_vectors[psr_index])
 
         # Now that we have the positions, we calculate their distances from Earth and each other
         psr_dists = np.linalg.norm(position_vectors, axis = -1)
         rel_dists = np.linalg.norm(position_vectors[:, None, :] - position_vectors[None, :, :], axis = -1)
 
-
         # Now that we have these quantities, let's start to build the time-time covariance matrix
-        total_times = np.sum([len(psr_toas[i]) for i in range(len(psr_toas))])
-        cov_mat = np.zeros((total_times, total_times))
-
         row_start = 0 # needed for constructing the block-embedded covariance matrix
         col_start = 0 # needed for constructing the block-embedded covariance matrix
 
         for p in range(n_psrs):
             for q in range(n_psrs):
 
-                # Picking the right distances
-                xp = psr_dists[p]
-                xq = psr_dists[q]
-                xpq = rel_dists[p, q]
+                # Evaluating the distances in units of the coherence length
+                xp = psr_dists[p] / l_kpc
+                xq = psr_dists[q] / l_kpc
+                xpq = rel_dists[p, q] / l_kpc
 
                 # The time differences for constructing the covariance matrix
                 delta_t = psr_toas[p][:, None] - psr_toas[q][None, :]
-                cov_block = get_cov_block(delta_t, xp, xq, xpq, m, l)
-
-                row_stop = row_start+cov_block.shape[0] # needed for constructing the block-embedded covariance matrix
-                col_stop = col_start+cov_block.shape[1] # needed for constructing the block-embedded covariance matrix
+                row_stop = row_start+delta_t.shape[0] # needed for constructing the block-embedded covariance matrix
+                col_stop = col_start+delta_t.shape[1] # needed for constructing the block-embedded covariance matrix
 
                 # Embed the covariance block and update the column starting position
+                cov_block = get_cov_block(precomputed_blocks[p][q], phases[p], phases[q], xp, xq, xpq)
+
                 cov_mat[row_start:row_stop, col_start:col_stop]= cov_block
-                col_start = col_stop
+                col_start = col_stop # Update the column starting position
 
             # Update the row starting position and reset the column starting position
             row_start = row_stop
@@ -600,16 +610,15 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
         return block_fourier_cov_mat
 
-
     return new_params_hd_orf(**{p.name: p for p in flat_params})
 
 
 def _params_key(params):
     return tuple(sorted(params.items()))
 
-def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
+def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
 
-    priorFunction = utils.constantspectrum(log10_A=log10_A)
+    priorFunction = utils.free_spectrum(log10_rho=log10_rho)
     basisFunction = utils.createfourierdesignmatrix_red(nmodes=1, fmin=freq, fmax=freq)
 
     class ULDMCommonGP(signal_base.CommonSignal):
@@ -640,7 +649,6 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
                 self._params[par.name] = par
 
             # Need this for now
-            self._psrpos = psr.pos
             self._psrname = psr.name
             self._orfdict = None
 
@@ -673,6 +681,8 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
                 ULDMCommonGP._orf_cache[key] = ULDMCommonGP._orf(params=params)
 
             orf_val = ULDMCommonGP._orf_cache[key][self._psrname][self._psrname]
+            print("Prior: ", prior)
+            print("ORF Value: ", orf_val)
             return prior * orf_val
 
         @classmethod

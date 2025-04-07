@@ -28,7 +28,7 @@ from enterprise.signals.gp_bases import (  # noqa: F401
     createfourierdesignmatrix_chromatic,
     createfourierdesignmatrix_general,
 )
-from enterprise.signals.gp_priors import powerlaw, turnover, constantspectrum  # noqa: F401
+from enterprise.signals.gp_priors import powerlaw, turnover, free_spectrum  # noqa: F401
 from enterprise.signals.parameter import function
 
 logger = logging.getLogger(__name__)
