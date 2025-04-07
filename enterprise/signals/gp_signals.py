@@ -681,8 +681,6 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
                 ULDMCommonGP._orf_cache[key] = ULDMCommonGP._orf(params=params)
 
             orf_val = ULDMCommonGP._orf_cache[key][self._psrname][self._psrname]
-            print("Prior: ", prior)
-            print("ORF Value: ", orf_val)
             return prior * orf_val
 
         @classmethod
