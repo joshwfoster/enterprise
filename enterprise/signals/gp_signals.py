@@ -7,10 +7,11 @@ function matrix and basis prior vector..
 import functools
 import itertools
 import logging
-
+import time
 import numpy as np
 import scipy.sparse as sps
 from sksparse.cholmod import cholesky
+from numba import njit
 
 from enterprise.signals import parameter, selections, signal_base, utils
 from enterprise.signals.parameter import function
@@ -490,15 +491,24 @@ def build_transformation_matrix(psrs, freq):
     XTransform = sps.linalg.inv(X_sparse.T @ X_sparse)@ X_sparse.T
     return XTransform
 
-@function
+@njit
 def get_cov_block(delta_t, xp, xq, xpq, m, l):
+    two_m = 2 * m
+    l2_inv = 1 / (l * l)
 
-    first  = np.cos(2*m*delta_t)
-    second = -np.exp(-xp**2/l**2) * np.cos(2*m*(delta_t - xp))
-    third  = -np.exp(-xq**2/l**2) * np.cos(2*m*(delta_t + xq))
-    fourth = np.exp(-xpq**2/l**2) * np.cos(2*m*(delta_t - xp + xq))
+    cos1 = np.cos(two_m * delta_t)
+    cos2 = np.cos(two_m * (delta_t - xp))
+    cos3 = np.cos(two_m * (delta_t + xq))
+    cos4 = np.cos(two_m * (delta_t - xp + xq))
 
-    return first + second + third + fourth
+    exp2 = np.exp(-xp**2 * l2_inv)
+    exp3 = np.exp(-xq**2 * l2_inv)
+    exp4 = np.exp(-xpq**2 * l2_inv)
+
+    return cos1 - exp2 * cos2 - exp3 * cos3 + exp4 * cos4
+
+
+
 
 @function
 def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
@@ -527,6 +537,7 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
 
     @function
     def new_params_hd_orf(**params):
+        start = time.time()
 
         # First we calculate the position of each pulsar updated by the displacement parameters
         position_vectors = np.zeros((psr_locs.shape[0], 3))
@@ -549,9 +560,11 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
             else:
                 phases[psr_index] = 2*m*np.linalg.norm(position_vectors[psr_index])
 
+
         # Now that we have the positions, we calculate their distances from Earth and each other
         psr_dists = np.linalg.norm(position_vectors, axis = -1)
         rel_dists = np.linalg.norm(position_vectors[:, None, :] - position_vectors[None, :, :], axis = -1)
+
 
         # Now that we have these quantities, let's start to build the time-time covariance matrix
         total_times = np.sum([len(psr_toas[i]) for i in range(len(psr_toas))])
@@ -587,10 +600,12 @@ def param_blocks_orf_wrapper(m, l, psr_names, psr_locs, psr_toas, congruence_mat
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
         return block_fourier_cov_mat
 
-        #return block_fourier_cov_mat[name1][name2]
 
     return new_params_hd_orf(**{p.name: p for p in flat_params})
 
+
+def _params_key(params):
+    return tuple(sorted(params.items()))
 
 def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
 
@@ -608,6 +623,7 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
 
         _orf = orfFunction(name)
         _prior = priorFunction(name)
+        _orf_cache={}
 
         def __init__(self, psr):
             super().__init__(psr)
@@ -648,16 +664,28 @@ def ULDMCommonGP(freq, log10_A, orfFunction, combine=True, name="uldm"):
             return self._basis
 
         def get_phi(self, params):
+
             self._construct_basis(params)
             prior = ULDMCommonGP._prior(self._labels, params=params)
-            orf = ULDMCommonGP._orf(params=params)[self._psrname][self._psrname]
-            return prior * orf
+            key = _params_key(params)
+
+            if key not in ULDMCommonGP._orf_cache:
+                ULDMCommonGP._orf_cache[key] = ULDMCommonGP._orf(params=params)
+
+            orf_val = ULDMCommonGP._orf_cache[key][self._psrname][self._psrname]
+            return prior * orf_val
 
         @classmethod
         def get_phicross(cls, signal1, signal2, params):
+
             prior = cls._prior(signal1._labels, params=params)
-            orf = cls._orf(params=params)[signal1._psrname][signal2._psrname]
-            return prior * orf
+            key = _params_key(params)
+
+            if key not in cls._orf_cache:
+                cls._orf_cache[key] = cls._orf(params=params)
+
+            orf_val = cls._orf_cache[key][signal1._psrname][signal2._psrname]
+            return prior * orf_val
 
     return ULDMCommonGP
 
