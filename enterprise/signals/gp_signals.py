@@ -510,6 +510,7 @@ def get_cov_block(precomputed, phase_p, phase_q, xp, xq, xpq):
 @function
 def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
     covariance = congruence_matrix @ time_domain_covariance @ congruence_matrix.T
+    np.save('./CovBeforeBlocking.npy', covariance)
 
     n = len(names)
     block_dict = {name_i: {} for name_i in names}
@@ -608,7 +609,12 @@ def param_blocks_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, cong
 
         # This is the covariance matrix in the fourier basis
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
-        return block_fourier_cov_mat
+
+        np.save('./TimeDomainCovariance.npy', cov_mat)
+        np.savez('./FourierBlocks.npz', **block_fourier_cov_mat)
+
+
+        return block_fourier_cov_mat #* (np.abs(block_fourier_cov_mat) >  1e-13)
 
     return new_params_hd_orf(**{p.name: p for p in flat_params})
 
