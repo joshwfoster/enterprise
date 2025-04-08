@@ -539,7 +539,8 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
     phases = np.zeros((psr_locs.shape[0]))
 
     # Shape of the covariance matrix will never change
-    total_times = np.sum([len(psr_toas[i]) for i in range(len(psr_toas))])
+    toa_sizes = [len(toas) for toas in psr_toas]
+    total_times = np.sum(toa_sizes)
     cov_mat = np.zeros((total_times, total_times))
 
     # Let's precompute all the cosines and sines we could need to accelerate the calculation
@@ -584,32 +585,33 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
         psr_dists = np.linalg.norm(position_vectors, axis = -1)
         rel_dists = np.linalg.norm(position_vectors[:, None, :] - position_vectors[None, :, :], axis = -1)
 
+
         # Now that we have these quantities, let's start to build the time-time covariance matrix
-        row_start = 0 # needed for constructing the block-embedded covariance matrix
-        col_start = 0 # needed for constructing the block-embedded covariance matrix
+        row_start = 0
 
         for p in range(n_psrs):
+            col_start = 0
+
             for q in range(n_psrs):
 
-                # Evaluating the distances in units of the coherence length
+                # Needed for block-embedding the covariance matrices
+                row_stop = row_start+toa_sizes[p]
+                col_stop = col_start+toa_sizes[q]
+
+                # the distances in units of the coherence length
                 xp = psr_dists[p] / l_kpc
                 xq = psr_dists[q] / l_kpc
                 xpq = rel_dists[p, q] / l_kpc
 
-                # The time differences for constructing the covariance matrix
-                delta_t = psr_toas[p][:, None] - psr_toas[q][None, :]
-                row_stop = row_start+delta_t.shape[0] # needed for constructing the block-embedded covariance matrix
-                col_stop = col_start+delta_t.shape[1] # needed for constructing the block-embedded covariance matrix
-
                 # Embed the covariance block and update the column starting position
                 cov_block = get_cov_block(precomputed_blocks[p][q], phases[p], phases[q], xp, xq, xpq)
+                cov_mat[row_start:row_stop, col_start:col_stop] = cov_block
 
-                cov_mat[row_start:row_stop, col_start:col_stop]= cov_block
-                col_start = col_stop # Update the column starting position
+                # Update the column starting position
+                col_start = col_stop
 
             # Update the row starting position and reset the column starting position
             row_start = row_stop
-            col_start = 0
 
         # This is the covariance matrix in the fourier basis
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
