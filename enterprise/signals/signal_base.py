@@ -203,6 +203,7 @@ class LogLikelihood(object):
         # correlated signals
         TNrs = self.pta.get_TNr(params)
         TNTs = self.pta.get_TNT(params)
+
         phiinvs = self.pta.get_phiinv(params, logdet=True, method=phiinv_method)
 
         # get -0.5 * (rNr + logdet_N) piece of likelihood
@@ -218,6 +219,7 @@ class LogLikelihood(object):
 
             TNT = self._block_TNT(TNTs)
             TNr = self._block_TNr(TNrs)
+            Sigma_sp = TNT + sps.csc_matrix(phiinv)
 
             if self.cholesky_sparse:
                 try:
@@ -629,6 +631,7 @@ class PTA(object):
         # if we found common signals, we'll return a big phivec matrix,
         # otherwise a list of phivec vectors (some of which possibly None)
         if self._commonsignals:
+
             if np.any([phi.ndim == 2 for phi in phis if phi is not None]):
                 # if we have any dense matrices,
                 Phi = sl.block_diag(*[np.diag(phi) if phi.ndim == 1 else phi for phi in phis if phi is not None])
@@ -663,10 +666,10 @@ class PTA(object):
 
                     if crossdiag.ndim == 1:
                         Phi[block1, block2][idx1, idx2] += crossdiag
-                        Phi[block2, block1][idx2, idx1] += crossdiag
+                        Phi[block2, block1][idx2, idx1] += crossdiag.T
                     else:
                         Phi[block1, block2][np.ix_(idx1, idx2)] += crossdiag
-                        Phi[block2, block1][np.ix_(idx2, idx1)] += crossdiag
+                        Phi[block2, block1][np.ix_(idx2, idx1)] += crossdiag.T
 
             return Phi
         else:
