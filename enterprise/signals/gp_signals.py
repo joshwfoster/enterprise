@@ -522,7 +522,7 @@ def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
 
     return block_dict
 
-def param_blocks_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_matrix, param_blocks):
+def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_matrix, param_blocks):
 
     # Doing a unit conversion that will be helpful later
     mass_invKpc = (mass_hz / units.s / constants.c).to(1/units.kpc).value # [1/kpc]
@@ -553,11 +553,17 @@ def param_blocks_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, cong
         precomputed_blocks.append(local_list)
 
     @function
-    def new_params_hd_orf(**params):
-        start = time.time()
-
-        # First we calculate the position of each pulsar updated by the displacement parameters
+    def uldm_orf(**params):
+        # Determining the position vectors and phases associated with each pulsar
         for psr_index, block in enumerate(param_blocks):
+
+            # Handling the case where only one parameter (the phase) is passed
+            if len(block) == 1:
+                position_vectors[psr_index] = psr_locs[psr_index]
+                phases[psr_index] = params[block[0].name]
+                continue
+
+            # Now handling the case when at least the displacement vector is passed
             r = params[block[0].name]
             cosTheta = params[block[1].name]
             phi = params[block[2].name]
@@ -568,7 +574,7 @@ def param_blocks_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, cong
 
             position_vectors[psr_index] = x, y, z
 
-            # Nothing is done with the phases righ now
+            # Catch the case where we also pass a phase nuisance parameter
             if len(block) == 4:
                 phases[psr_index] = params[block[3].name]
             else:
@@ -607,14 +613,9 @@ def param_blocks_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, cong
 
         # This is the covariance matrix in the fourier basis
         block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names)
+        return block_fourier_cov_mat
 
-        np.save('./TimeDomainCovariance.npy', cov_mat)
-        np.savez('./FourierBlocks.npz', **block_fourier_cov_mat)
-
-
-        return block_fourier_cov_mat #* (np.abs(block_fourier_cov_mat) >  1e-13)
-
-    return new_params_hd_orf(**{p.name: p for p in flat_params})
+    return uldm_orf(**{p.name: p for p in flat_params})
 
 
 def _params_key(params):
