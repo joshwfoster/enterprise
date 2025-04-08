@@ -16,6 +16,8 @@ from enterprise.signals.parameter import function
 from enterprise.signals.selections import Selection
 from enterprise.signals.utils import KernelMatrix
 from astropy import units, constants
+from collections import OrderedDict
+
 
 # logging.basicConfig(format="%(levelname)s: %(name)s: %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -637,9 +639,10 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
 
         basis_combine = combine
 
-        _orf = orfFunction(name)
         _prior = priorFunction(name)
-        _orf_cache={}
+        _orf = orfFunction(name)
+        _orf_cache = OrderedDict()
+        MAX_CACHE_SIZE = 100
 
         def __init__(self, psr):
             super().__init__(psr)
@@ -679,28 +682,33 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
             return self._basis
 
         def get_phi(self, params):
-
             self._construct_basis(params)
             prior = ULDMCommonGP._prior(self._labels, params=params)
-            key = _params_key(params)
-
-            if key not in ULDMCommonGP._orf_cache:
-                ULDMCommonGP._orf_cache[key] = ULDMCommonGP._orf(params=params)
-
-            orf_val = ULDMCommonGP._orf_cache[key][self._psrname][self._psrname]
+            orf_dict = ULDMCommonGP._get_orf_cached(params)
+            orf_val = orf_dict[self._psrname][self._psrname]
             return prior * orf_val
 
         @classmethod
         def get_phicross(cls, signal1, signal2, params):
-
             prior = cls._prior(signal1._labels, params=params)
-            key = _params_key(params)
-
-            if key not in cls._orf_cache:
-                cls._orf_cache[key] = cls._orf(params=params)
-
-            orf_val = cls._orf_cache[key][signal1._psrname][signal2._psrname]
+            orf_dict = cls._get_orf_cached(params)
+            orf_val = orf_dict[signal1._psrname][signal2._psrname]
             return prior * orf_val
+
+        @classmethod
+        def _get_orf_cached(cls, params):
+            key = _params_key(params)
+            cache = cls._orf_cache
+
+            if key not in cache:
+                cache[key] = cls._orf(params=params)
+                cache.move_to_end(key)
+                if len(cache) > cls.MAX_CACHE_SIZE:
+                    cache.popitem(last=False)
+            else:
+                cache.move_to_end(key)
+
+            return cache[key]
 
     return ULDMCommonGP
 
