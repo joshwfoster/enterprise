@@ -7,11 +7,9 @@ function matrix and basis prior vector..
 import functools
 import itertools
 import logging
-import time
 import numpy as np
 import scipy.sparse as sps
 from sksparse.cholmod import cholesky
-from numba import njit
 
 from enterprise.signals import parameter, selections, signal_base, utils
 from enterprise.signals.parameter import function
