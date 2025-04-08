@@ -712,7 +712,7 @@ def FourierBasisCommonGP_ephem(spectrum, components, Tspan, name="ephem_gp"):
     basis = utils.createfourierdesignmatrix_ephem(nmodes=components, Tspan=Tspan)
     orf = utils.monopole_orf()
 
-    return BasisCommonGP(spectrum, basis, orf(), name=name)
+    return BasisCommonGP(spectrum, basis, orf, name=name)
 
 
 def FourierBasisCommonGP_physicalephem(
