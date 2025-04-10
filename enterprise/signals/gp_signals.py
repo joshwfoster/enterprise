@@ -508,9 +508,9 @@ def get_cov_block(precomputed, phase_p, phase_q, xp, xq, xpq):
 
 
 @function
-def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
+def get_fourier_blocks(time_domain_covariance, congruence_matrix, names, regularize = False):
     covariance = congruence_matrix @ time_domain_covariance @ congruence_matrix.T
-    np.save('./CovBeforeBlocking.npy', covariance)
+    regularizer = np.amax(np.abs(covariance)) / 1e6 * regularize
 
     n = len(names)
     block_dict = {name_i: {} for name_i in names}
@@ -519,7 +519,7 @@ def get_fourier_blocks(time_domain_covariance, congruence_matrix, names):
         for j in range(n):
             name_i = names[i]
             name_j = names[j]
-            block = covariance[2*i:2*i+2, 2*j:2*j+2]
+            block = covariance[2*i:2*i+2, 2*j:2*j+2] * (1 + regularizer * ( i == j))
             block_dict[name_i][name_j] = block
 
     return block_dict
@@ -621,17 +621,38 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
 
     return uldm_orf(**{p.name: p for p in flat_params})
 
+def simple_uldm_orf_wrapper(mass_hz, psr_names, psr_toas, congruence_matrix):
+    """
+    Returns a precomputed ORF dictionary for a fixed ULDM mass.
+    Behaves like the parametric ORF wrapper but is non-parametric.
+    """
+
+    # Generate the time-time covariance matrix
+    all_toas = np.concatenate(psr_toas)
+    cov_mat = np.cos(2 * mass_hz * (all_toas[:, None] - all_toas[None, :]))
+    block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names, regularize=True)
+    return block_fourier_cov_mat
+
+    @function
+    def simple_uldm_orf(**params):  # No params actually used
+        return block_fourier_cov_mat
+
+    # Immediately evaluate with no parameters
+    return simple_uldm_orf
+
+
 
 def _params_key(params):
     return tuple(sorted(params.items()))
 
-def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
 
+def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
     priorFunction = utils.free_spectrum(log10_rho=log10_rho)
     basisFunction = utils.createfourierdesignmatrix_red(nmodes=1, fmin=freq, fmax=freq)
 
-    class ULDMCommonGP(signal_base.CommonSignal):
+    is_static_orf = not callable(orfFunction)
 
+    class ULDMCommonGP(signal_base.CommonSignal):
         signal_type = "common basis"
         signal_name = "uldm"
         signal_id = name
@@ -640,7 +661,9 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
         basis_combine = combine
 
         _prior = priorFunction(name)
-        _orf = orfFunction(name)
+        _orf_is_static = is_static_orf
+        _orf_static_dict = orfFunction if is_static_orf else None
+        _orf = None if is_static_orf else orfFunction(name)
         _orf_cache = OrderedDict()
         MAX_CACHE_SIZE = 100
 
@@ -652,13 +675,13 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
             self._bases = basisFunction(pname, psr=psr)
 
             self._params = {}
+            param_sources = [self._prior._params.values(), self._bases._params.values()]
+            if not ULDMCommonGP._orf_is_static:
+                param_sources.append(self._orf._params.values())
 
-            for par in itertools.chain(
-                self._prior._params.values(), self._orf._params.values(), self._bases._params.values()
-            ):
+            for par in itertools.chain(*param_sources):
                 self._params[par.name] = par
 
-            # Need this for now
             self._psrname = psr.name
             self._orfdict = None
 
@@ -697,6 +720,9 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
 
         @classmethod
         def _get_orf_cached(cls, params):
+            if cls._orf_is_static:
+                return cls._orf_static_dict
+
             key = _params_key(params)
             cache = cls._orf_cache
 
