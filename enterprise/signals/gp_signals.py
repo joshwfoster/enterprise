@@ -8,6 +8,7 @@ import functools
 import itertools
 import logging
 import numpy as np
+import scipy as sp
 import scipy.sparse as sps
 from sksparse.cholmod import cholesky
 
@@ -467,7 +468,6 @@ def FourierBasisCommonGP(
 ###  This is start of my implementation!   ###
 ##############################################
 
-@function
 def build_transformation_matrix(psrs, freq):
     """Builds the global block sparse matrix X = [C1 S1 C2 S2 ...]"""
 
@@ -479,14 +479,15 @@ def build_transformation_matrix(psrs, freq):
 
     offset = 0
     for i, psr in enumerate(psrs):
-        F, _ = utils.createfourierdesignmatrix_red(
-            toas=psr.toas, nmodes=1, fmin=freq, fmax=freq
-        )
+
+        F, _ = utils.createfourierdesignmatrix_red(toas=psr.toas, nmodes=1, fmin=freq, fmax=freq)
         Np = len(psr.toas)
+
         for j in range(2):
             rows.extend(offset + np.arange(Np))
             cols.extend([2 * i + j] * Np)
             data.extend(F[:, j])
+
         offset += Np
 
     X_sparse = sps.coo_matrix((data, (rows, cols)), shape=(toas_total, ncols)).tocsr()
@@ -507,10 +508,8 @@ def get_cov_block(precomputed, phase_p, phase_q, xp, xq, xpq):
 
     return cos1 - exp2*cos2 - exp3*cos3 + exp4*cos4
 
-@function
-def get_fourier_blocks(time_domain_covariance, congruence_matrix, names, regularize = False):
+def get_fourier_blocks(time_domain_covariance, congruence_matrix, names, regularize = 0):
     covariance = congruence_matrix @ time_domain_covariance @ congruence_matrix.T
-    regularizer = np.amax(np.abs(covariance)) / 1e6 * regularize
 
     n = len(names)
     block_dict = {name_i: {} for name_i in names}
@@ -519,7 +518,7 @@ def get_fourier_blocks(time_domain_covariance, congruence_matrix, names, regular
         for j in range(n):
             name_i = names[i]
             name_j = names[j]
-            block = covariance[2*i:2*i+2, 2*j:2*j+2] * (1 + regularizer * ( i == j))
+            block = covariance[2*i:2*i+2, 2*j:2*j+2] * (1 + regularize * ( i == j))
             block_dict[name_i][name_j] = block
 
     return block_dict
@@ -643,25 +642,21 @@ def simple_uldm_orf_wrapper(mass_hz, psrs):
     # Generate the time-time covariance matrix and then transform to the fourier basis
     all_toas = np.concatenate(psr_toas)
     cov_mat = np.cos(2 * mass_hz * (all_toas[:, None] - all_toas[None, :]))
-    block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names, regularize=True)
+    block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names, regularize=1)
 
     return block_fourier_cov_mat
 
 def _params_key(params):
     return tuple(sorted(params.items()))
 
-
-def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
-    priorFunction = utils.free_spectrum(log10_rho=log10_rho)
-    basisFunction = utils.createfourierdesignmatrix_red(nmodes=1, fmin=freq, fmax=freq)
-
+def ULDMCommonGP(priorFunction, basisFunction, orfFunction, combine=True, name="uldm"):
     is_static_orf = not callable(orfFunction)
 
     class ULDMCommonGP(signal_base.CommonSignal):
+
         signal_type = "common basis"
         signal_name = "uldm"
         signal_id = name
-        signal_frequency = freq
 
         basis_combine = combine
 
@@ -711,17 +706,30 @@ def ULDMCommonGP(freq, log10_rho, orfFunction, combine=True, name="uldm"):
 
         def get_phi(self, params):
             self._construct_basis(params)
-            prior = ULDMCommonGP._prior(self._labels, params=params)
+            prior = ULDMCommonGP._prior(self._labels, params=params)  # shape: (nfreq,)
             orf_dict = ULDMCommonGP._get_orf_cached(params)
-            orf_val = orf_dict[self._psrname][self._psrname]
-            return prior * orf_val
+            orf_mat = orf_dict[self._psrname][self._psrname]
+
+            # Multiply each frequency's 2×2 matrix by prior[f]
+            nfreq = len(prior) // 2
+            phi_blocks = [np.diag(prior[2*f : 2*f + 2]) @ orf_mat for f in range(nfreq)]
+
+            # Return as block diagonal matrix
+            return sp.linalg.block_diag(*phi_blocks)  # shape: (2*nfreq, 2*nfreq)
+
 
         @classmethod
         def get_phicross(cls, signal1, signal2, params):
             prior = cls._prior(signal1._labels, params=params)
             orf_dict = cls._get_orf_cached(params)
-            orf_val = orf_dict[signal1._psrname][signal2._psrname]
-            return prior * orf_val
+            orf_mat = orf_dict[signal1._psrname][signal2._psrname]
+
+            # Multiply each frequency's 2×2 matrix by prior[f]
+            nfreq = len(prior) // 2
+            phi_blocks = [np.diag(prior[2*f : 2*f + 2]) @ orf_mat for f in range(nfreq)]
+
+            # Return as block diagonal matrix
+            return sp.linalg.block_diag(*phi_blocks)  # shape: (2*nfreq, 2*nfreq)
 
         @classmethod
         def _get_orf_cached(cls, params):
