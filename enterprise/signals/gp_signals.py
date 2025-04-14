@@ -470,6 +470,7 @@ def FourierBasisCommonGP(
 @function
 def build_transformation_matrix(psrs, freq):
     """Builds the global block sparse matrix X = [C1 S1 C2 S2 ...]"""
+
     toas_total = sum(len(p.toas) for p in psrs)
     ncols = 2 * len(psrs)
     data = []
@@ -506,7 +507,6 @@ def get_cov_block(precomputed, phase_p, phase_q, xp, xq, xpq):
 
     return cos1 - exp2*cos2 - exp3*cos3 + exp4*cos4
 
-
 @function
 def get_fourier_blocks(time_domain_covariance, congruence_matrix, names, regularize = False):
     covariance = congruence_matrix @ time_domain_covariance @ congruence_matrix.T
@@ -524,23 +524,25 @@ def get_fourier_blocks(time_domain_covariance, congruence_matrix, names, regular
 
     return block_dict
 
-def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_matrix, param_blocks):
-
-    # Doing a unit conversion that will be helpful later
-    mass_invKpc = (mass_hz / units.s / constants.c).to(1/units.kpc).value # [1/kpc]
-
-    # Take care of formatting
-    n_psrs = len(psr_locs)
-    psr_locs = np.asarray(psr_locs)
+def uldm_orf_wrapper(mass_hz, l_kpc, psrs, param_blocks):
 
     # Flatten the list for the decorator and instantiation
     flat_params = [p for block in param_blocks for p in block]
 
-    # Making some things class variables to declutter and save on initialization
-    position_vectors = np.zeros((psr_locs.shape[0], 3))
-    phases = np.zeros((psr_locs.shape[0]))
+    # Doing some useful unit conversions
+    signal_freq_hz = mass_hz / np.pi # This is the signal
+    mass_invKpc = (mass_hz / units.s / constants.c).to(1/units.kpc).value # [1/kpc]
 
-    # Shape of the covariance matrix will never change
+    # Formatting the pulsar data
+    n_psrs = len(psrs)
+    psr_names = [psrs[i].name for i in range(n_psrs)] # These are the names
+    psr_toas =  [psrs[i].toas for i in range(n_psrs)] # There are the toas in seconds
+    psr_locs = np.array([psrs[i].pdist[0] * psrs[i].pos for i in range(n_psrs)]) # These are the displacement-vectors in kpc
+
+    # The congruence matrix will never change because the signal frequency never changes
+    congruence_matrix = build_transformation_matrix(psrs, signal_freq_hz)
+
+    # Shape of the covariance matrix will never change because the toas never change
     toa_sizes = [len(toas) for toas in psr_toas]
     total_times = np.sum(toa_sizes)
     cov_mat = np.zeros((total_times, total_times))
@@ -557,6 +559,11 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
 
     @function
     def uldm_orf(**params):
+
+        # These are the position vectorsa and phases we will determine from the parameters
+        position_vectors = np.zeros((psr_locs.shape[0], 3))
+        phases = np.zeros((psr_locs.shape[0]))
+
         # Determining the position vectors and phases associated with each pulsar
         for psr_index, block in enumerate(param_blocks):
 
@@ -584,6 +591,8 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
                 phases[psr_index] = 2*mass_invKpc*np.linalg.norm(position_vectors[psr_index])
 
         # Now that we have the positions, we calculate their distances from Earth and each other
+        # working in units of coherence length
+        position_vectors /= l_kpc
         psr_dists = np.linalg.norm(position_vectors, axis = -1)
         rel_dists = np.linalg.norm(position_vectors[:, None, :] - position_vectors[None, :, :], axis = -1)
 
@@ -600,13 +609,8 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
                 row_stop = row_start+toa_sizes[p]
                 col_stop = col_start+toa_sizes[q]
 
-                # the distances in units of the coherence length
-                xp = psr_dists[p] / l_kpc
-                xq = psr_dists[q] / l_kpc
-                xpq = rel_dists[p, q] / l_kpc
-
                 # Embed the covariance block and update the column starting position
-                cov_block = get_cov_block(precomputed_blocks[p][q], phases[p], phases[q], xp, xq, xpq)
+                cov_block = get_cov_block(precomputed_blocks[p][q], phases[p], phases[q], psr_dists[p], psr_dists[q], rel_dists[p, q])
                 cov_mat[row_start:row_stop, col_start:col_stop] = cov_block
 
                 # Update the column starting position
@@ -621,26 +625,27 @@ def uldm_orf_wrapper(mass_hz, l_kpc, psr_names, psr_locs, psr_toas, congruence_m
 
     return uldm_orf(**{p.name: p for p in flat_params})
 
-def simple_uldm_orf_wrapper(mass_hz, psr_names, psr_toas, congruence_matrix):
+def simple_uldm_orf_wrapper(mass_hz, psrs):
     """
     Returns a precomputed ORF dictionary for a fixed ULDM mass.
     Behaves like the parametric ORF wrapper but is non-parametric.
     """
 
-    # Generate the time-time covariance matrix
+    # Formatting the pulsar data
+    n_psrs = len(psrs)
+    psr_names = [psrs[i].name for i in range(n_psrs)] # These are the names
+    psr_toas =  [psrs[i].toas for i in range(n_psrs)] # There are the toas in seconds
+
+    # Building the congruence matrix
+    signal_freq_hz = mass_hz / np.pi # This is the signal frequency
+    congruence_matrix = build_transformation_matrix(psrs, signal_freq_hz)
+
+    # Generate the time-time covariance matrix and then transform to the fourier basis
     all_toas = np.concatenate(psr_toas)
     cov_mat = np.cos(2 * mass_hz * (all_toas[:, None] - all_toas[None, :]))
     block_fourier_cov_mat = get_fourier_blocks(cov_mat, congruence_matrix, psr_names, regularize=True)
+
     return block_fourier_cov_mat
-
-    @function
-    def simple_uldm_orf(**params):  # No params actually used
-        return block_fourier_cov_mat
-
-    # Immediately evaluate with no parameters
-    return simple_uldm_orf
-
-
 
 def _params_key(params):
     return tuple(sorted(params.items()))
