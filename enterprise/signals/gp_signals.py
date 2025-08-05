@@ -511,7 +511,7 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
 
         # Step 3: Compute Gamma_ij matrix
         if model_type == "proper":
-            R_full = np.exp(-(mass_invKpc * distance_matrix / l_kpc) ** 2 / 2)
+            R_full = np.exp(-(distance_matrix / l_kpc) ** 2 / 2)
             R_ij = R_full[1:, 1:]
             R_i = R_full[0, 1:]
 
