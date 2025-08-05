@@ -517,6 +517,7 @@ class PTA(object):
 
     def get_phiinv_byfreq_cliques(self, params, logdet=False, cholesky=False):
         phi = self.get_phi(params, cliques=True)
+        np.save('phi.npy', phi)
 
         if isinstance(phi, list):
             return [None if phivec is None else phivec.inv(logdet) for phivec in phi]
