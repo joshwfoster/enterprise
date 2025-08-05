@@ -482,16 +482,17 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
 
     @function
     def uldm_orf(**params):
+
         # Step 1: Compute effective positions and phases
         positions = [np.zeros(3)]  # Earth at origin
         phases = [0.0]             # Earth phase = 0
 
         for i, name in enumerate(psr_names):
-            d_key = name + "_radial_displacement"
+            r_key = name + "_radial_displacement"
             phi_key = name + "_phase"
 
-            if d_key in params:
-                r = psr_dists[i] + params[d_key]
+            if r_key in params:
+                r = params[r_key]
             else:
                 r = psr_dists[i]
 
