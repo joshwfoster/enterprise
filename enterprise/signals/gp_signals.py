@@ -511,7 +511,7 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
         distance_matrix = cdist(positions, positions)
 
         # Step 3: Compute Gamma_ij matrix
-        if model_type == "proper":
+        if model_type == "proper" or model_type == "improper":
             R_full = np.exp(-(distance_matrix / l_kpc) ** 2 / 2)
             R_ij = R_full[1:, 1:]
             R_i = R_full[0, 1:]
@@ -531,12 +531,11 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
         exp_phi = np.exp(1j * phi_i)
         exp_phi_outer = exp_phi[:, None] * np.conj(exp_phi)[None, :]
 
-        ratio = y_p / y_e
         gamma_matrix = (
-            1
-            + ratio**2 * exp_phi_outer * R_ij
-            + ratio * exp_phi[:, None] * R_i[:, None]
-            + ratio * np.conj(exp_phi)[None, :] * R_i[None, :]
+            y_e**2
+            + y_p**2 * exp_phi_outer * R_ij
+            + y_e*y_p * exp_phi[:, None] * R_i[:, None]
+            + y_e*y_p * np.conj(exp_phi)[None, :] * R_i[None, :]
         )
 
         # Include a regulating factor
