@@ -469,7 +469,7 @@ def FourierBasisCommonGP(
 ###  This is start of my implementation!   ###
 ##############################################
 
-def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model_type="proper"):
+def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1):
 
     # Flatten all parameters for instantiation
     flat_params = [p for block in param_blocks for p in block]
@@ -491,41 +491,22 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
             r_key = name + "_radial_displacement"
             phi_key = name + "_phase"
 
-            if r_key in params:
-                r = params[r_key]
-            else:
-                r = psr_dists[i]
+            r = params.get(r_key)         # will exist with your current construction
+            phi = params.get(phi_key)
 
-            if phi_key in params:
-                phases.append(params[phi_key])
-            else:
-                phases.append(mass_invKpc * r)
-
-            vec = r * psr_dirs[i]
-            positions.append(vec)
+            positions.append(r * psr_dirs[i])
+            phases.append(phi)
 
         positions = np.array(positions)
         phases = np.array(phases)
 
         # Step 2: Compute pairwise distance matrix (in kpc)
         distance_matrix = cdist(positions, positions)
+        R_full = np.nan_to_num(np.exp(-(distance_matrix / l_kpc) ** 2 / 2), nan = 0.)
+        np.fill_diagonal(R_full, 1.0)
 
-        # Step 3: Compute Gamma_ij matrix
-        if model_type == "proper" or model_type == "improper":
-            R_full = np.exp(-(distance_matrix / l_kpc) ** 2 / 2)
-            R_ij = R_full[1:, 1:]
-            R_i = R_full[0, 1:]
-
-        elif model_type == "fully-correlated":
-            R_ij = np.ones((n_psrs, n_psrs))
-            R_i = np.ones(n_psrs)
-
-        elif model_type == "fully-uncorrelated":
-            R_ij = np.eye(n_psrs)
-            R_i = np.zeros(n_psrs)
-
-        else:
-            raise ValueError(f"Unrecognized model_type: {model_type!r}")
+        R_ij = R_full[1:, 1:]
+        R_i = R_full[0, 1:]
 
         phi_i = phases[1:]
         exp_phi = np.exp(1j * phi_i)
@@ -539,10 +520,9 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
         )
 
         # Include a regulating factor
-        if model_type == "fully-correlated":
-            gamma_matrix = gamma_matrix + 1e-6 * np.eye(n_psrs)
+        gamma_matrix = gamma_matrix + 1e-6 * np.eye(n_psrs)
 
-        # Step 4: Assemble Σ_ij blocks as real 2×2 matrices
+        # Step 3: Assemble Σ_ij blocks as real 2×2 matrices
         sigma_dict = {
             name_i: {
                 name_j: np.array([
@@ -553,7 +533,6 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1, model
             }
             for i, name_i in enumerate(psr_names)
         }
-
         return sigma_dict
 
     return uldm_orf(**{p.name: p for p in flat_params})
@@ -648,6 +627,8 @@ def ULDMCommonGP(priorFunction, basisFunction, orfFunction, combine=True, name="
             return cache[key]
 
     return ULDMCommonGP
+
+
 
 ################################################
 ###   This is the end of my implementation   ###
