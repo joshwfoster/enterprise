@@ -512,7 +512,7 @@ def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1):
         exp_phi = np.exp(1j * phi_i)
         exp_phi_outer = exp_phi[:, None] * np.conj(exp_phi)[None, :]
 
-        gamma_matrix = (
+        gamma_matrix = 0.5 * (
             y_e**2
             + y_p**2 * exp_phi_outer * R_ij
             + y_e*y_p * exp_phi[:, None] * R_i[:, None]
