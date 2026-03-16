@@ -469,7 +469,7 @@ def FourierBasisCommonGP(
 ###  This is start of my implementation!   ###
 ##############################################
 
-def uldm_orf_wrapper(psrs, mass_invKpc, l_kpc, param_blocks, y_e=1, y_p=1):
+def uldm_orf_wrapper(psrs, l_kpc, param_blocks, y_e=1, y_p=1):
 
     # Flatten all parameters for instantiation
     flat_params = [p for block in param_blocks for p in block]
